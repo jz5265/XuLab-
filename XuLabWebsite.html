@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Xu Lab Management System</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #f5f6f8; min-height: 100vh; color: #1a1a1a; }
+    input, select, textarea, button { font-family: Arial, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #f0f0f0; }
+    ::-webkit-scrollbar-thumb { background: #b48c3c; border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { useState, useEffect } = React;
+
+  // ── !! PASTE YOUR APPS SCRIPT URL HERE !! ──────────────────
+  const API_URL = "https://script.google.com/macros/s/AKfycbxuSDRuEtJUmBIfdVcpfsATkkrcQF4QostCOqZLYMKs8ueGaGYQBKNl8ocdj36Lq5-2cw/exec";
+  // ────────────────────────────────────────────────────────────
+
+  const TABS = ["Overview", "Meeting Records", "To-Do List", "Daily Logs", "Trash"];
+  const PRIORITY_COLOR = { high: "#e74c3c", medium: "#f39c12", low: "#27ae60" };
+  const PRIORITY_LABEL = { high: "Urgent", medium: "Medium", low: "Normal" };
+  const LOG_TYPE_COLOR  = { "Experiment":"#3498db","Maintenance":"#9b59b6","Safety Check":"#e67e22","Other":"#95a5a6" };
+
+  async function api(method, body) {
+    if (method === "GET") {
+      const res = await fetch(`${API_URL}?action=getAll`);
+      return res.json();
+    }
+    const res = await fetch(API_URL, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  function LabManager() {
+    const [activeTab, setActiveTab]         = useState("Overview");
+    const [meetings, setMeetings]           = useState([]);
+    const [todos, setTodos]                 = useState([]);
+    const [dailyLogs, setDailyLogs]         = useState([]);
+    const [trash, setTrash]                 = useState([]);
+    const [loading, setLoading]             = useState(true);
+    const [saving, setSaving]               = useState(false);
+    const [showMeetingForm, setShowMeetingForm] = useState(false);
+    const [showTodoForm, setShowTodoForm]   = useState(false);
+    const [showLogForm, setShowLogForm]     = useState(false);
+    const [newMeeting, setNewMeeting]       = useState({ date:"", title:"", presenter:"", summary:"", tags:"", notes:"" });
+    const [newTodo, setNewTodo]             = useState({ text:"", priority:"medium", due:"" });
+    const [newLog, setNewLog]               = useState({ date: new Date().toISOString().split("T")[0], type:"Experiment", content:"", author:"" });
+    const [filter, setFilter]               = useState("all");
+    const [confirmClear, setConfirmClear]   = useState(false);
+    const [expandedMeeting, setExpandedMeeting] = useState(null);
+    const [expandedLog, setExpandedLog]     = useState(null);
+    const [error, setError]                 = useState(null);
+
+    // Load all data on mount
+    useEffect(() => { loadAll(); }, []);
+
+    const loadAll = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await api("GET");
+        if (data.error) throw new Error(data.error);
+        setMeetings(data.meetings || []);
+        setTodos(data.todos || []);
+        setDailyLogs(data.logs || []);
+        setTrash(data.trash || []);
+      } catch(e) {
+        setError("Failed to load data. Check your API URL.");
+      }
+      setLoading(false);
+    };
+
+    const withSave = async (fn) => {
+      setSaving(true);
+      setError(null);
+      try { await fn(); await loadAll(); }
+      catch(e) { setError("Failed to save. Please try again."); }
+      setSaving(false);
+    };
+
+    const addMeeting = () => {
+      if (!newMeeting.title || !newMeeting.date) return;
+      const m = { ...newMeeting, id: Date.now(), tags: newMeeting.tags.split(",").map(t=>t.trim()).filter(Boolean) };
+      withSave(async () => { await api("POST", { action:"addMeeting", data:m }); });
+      setNewMeeting({ date:"", title:"", presenter:"", summary:"", tags:"", notes:"" });
+      setShowMeetingForm(false);
+    };
+
+    const addTodo = () => {
+      if (!newTodo.text) return;
+      const t = { ...newTodo, id: Date.now(), done: false };
+      withSave(async () => { await api("POST", { action:"addTodo", data:t }); });
+      setNewTodo({ text:"", priority:"medium", due:"" });
+      setShowTodoForm(false);
+    };
+
+    const addLog = () => {
+      if (!newLog.content) return;
+      const l = { ...newLog, id: Date.now() };
+      withSave(async () => { await api("POST", { action:"addLog", data:l }); });
+      setNewLog({ date: new Date().toISOString().split("T")[0], type:"Experiment", content:"", author:"" });
+      setShowLogForm(false);
+    };
+
+    const toggleTodo = (id) => withSave(async () => { await api("POST", { action:"toggleTodo", id }); });
+
+    const moveToTrash = (item, type) => {
+      const deletedAt = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
+      withSave(async () => { await api("POST", { action:"moveToTrash", item, type, deletedAt }); });
+    };
+
+    const restoreItem = (trashItem) => withSave(async () => {
+      await api("POST", { action:"restoreItem", item:trashItem.item, type:trashItem.type });
+    });
+
+    const permanentDelete = (trashItem) => withSave(async () => {
+      await api("POST", { action:"permanentDelete", item:trashItem.item, type:trashItem.type });
+    });
+
+    const clearTrash = () => {
+      withSave(async () => { await api("POST", { action:"clearTrash" }); });
+      setConfirmClear(false);
+    };
+
+    const filteredTodos   = filter==="all" ? todos : filter==="done" ? todos.filter(t=>t.done) : todos.filter(t=>!t.done);
+    const pendingCount    = todos.filter(t=>!t.done).length;
+    const urgentCount     = todos.filter(t=>t.priority==="high"&&!t.done).length;
+
+    const s = {
+      wrap: { maxWidth:1080, margin:"0 auto", padding:"0 24px" },
+      header: { borderBottom:"1px solid #e0e0e0", padding:"20px 0 16px", display:"flex", alignItems:"center", justifyContent:"space-between", background:"#ffffff" },
+      logoIcon: { width:44, height:44, borderRadius:10, background:"linear-gradient(135deg,#b48c3c,#d4a843)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800, color:"#fff", boxShadow:"0 4px 16px rgba(180,140,60,0.25)", marginRight:14, flexShrink:0 },
+      labName: { fontSize:20, fontWeight:700, color:"#1a1a1a" },
+      labSub: { fontSize:11, color:"#999", marginTop:2 },
+      nav: { display:"flex", gap:4, padding:"12px 0", borderBottom:"1px solid #e8e8e8", flexWrap:"wrap", background:"#ffffff" },
+      navBtn: (a, isTrash) => ({ position:"relative", padding:"8px 18px", borderRadius:6, border:"none", borderBottom:a?`2px solid ${isTrash?"#e74c3c":"#b48c3c"}`:"2px solid transparent", cursor:"pointer", fontSize:13, background:a?(isTrash?"rgba(231,76,60,0.08)":"rgba(180,140,60,0.1)"):"transparent", color:a?(isTrash?"#e74c3c":"#9a6c20"):"#888", fontWeight:a?600:400 }),
+      badge: { position:"absolute", top:3, right:4, background:"#e74c3c", color:"#fff", borderRadius:8, fontSize:9, fontWeight:700, padding:"1px 5px", lineHeight:1.5 },
+      card: { background:"#ffffff", border:"1px solid #e8e8e8", borderRadius:12, padding:22, boxShadow:"0 1px 4px rgba(0,0,0,0.05)" },
+      statCard: (r,g,b) => ({ background:`linear-gradient(135deg,rgba(${r},${g},${b},0.08),rgba(${r},${g},${b},0.02))`, border:`1px solid rgba(${r},${g},${b},0.18)`, borderRadius:12, padding:"18px 22px" }),
+      statNum: (r,g,b) => ({ fontSize:34, fontWeight:700, color:`rgb(${r},${g},${b})`, lineHeight:1 }),
+      statLabel: { fontSize:12, color:"#888", marginTop:6 },
+      btn: (v="p") => ({ padding:"8px 18px", borderRadius:7, border:v==="p"?"none":"1px solid #ddd", cursor:"pointer", fontSize:13, background:v==="p"?"linear-gradient(135deg,#b48c3c,#d4a843)":"#f5f5f5", color:v==="p"?"#fff":"#555", fontWeight:v==="p"?700:400 }),
+      delBtn: { padding:"3px 10px", borderRadius:6, border:"1px solid rgba(231,76,60,0.3)", cursor:"pointer", background:"rgba(231,76,60,0.07)", color:"#e74c3c", fontSize:12 },
+      restoreBtn: { padding:"4px 12px", borderRadius:6, border:"1px solid rgba(39,174,96,0.35)", cursor:"pointer", background:"rgba(39,174,96,0.08)", color:"#27ae60", fontSize:12 },
+      permDelBtn: { padding:"4px 12px", borderRadius:6, border:"1px solid rgba(231,76,60,0.4)", cursor:"pointer", background:"rgba(231,76,60,0.1)", color:"#e74c3c", fontSize:12, fontWeight:700 },
+      input: { background:"#f9f9f9", border:"1px solid #ddd", borderRadius:7, padding:"9px 13px", color:"#1a1a1a", fontSize:14, outline:"none", width:"100%", boxSizing:"border-box" },
+      tag: (c) => ({ display:"inline-block", padding:"3px 10px", borderRadius:20, fontSize:11, background:c?`${c}18`:"rgba(180,140,60,0.12)", color:c||"#9a6c20", border:`1px solid ${c?c+"44":"rgba(180,140,60,0.25)"}` }),
+      sectionTitle: { fontSize:14, fontWeight:700, color:"#333", marginBottom:14, display:"flex", alignItems:"center", gap:8 },
+      mCard: { background:"#fafafa", border:"1px solid #e8e8e8", borderRadius:10, padding:16, marginBottom:10, borderLeft:"3px solid #b48c3c" },
+      todoItem: (d) => ({ display:"flex", alignItems:"center", gap:12, padding:"11px 14px", background:d?"#fafafa":"#fff", borderRadius:9, marginBottom:7, opacity:d?0.55:1, border:"1px solid #e8e8e8" }),
+      chk: (d) => ({ width:18, height:18, borderRadius:4, cursor:"pointer", border:`2px solid ${d?"#b48c3c":"#ccc"}`, background:d?"#b48c3c":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }),
+      logCard: { background:"#fafafa", border:"1px solid #e8e8e8", borderRadius:9, padding:"13px 16px", marginBottom:9 },
+      trashCard: { background:"rgba(231,76,60,0.03)", border:"1px solid rgba(231,76,60,0.15)", borderRadius:10, padding:16, marginBottom:10 },
+      modal: { position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center" },
+      mBox: { background:"#ffffff", border:"1px solid #e0e0e0", borderRadius:14, padding:28, width:"100%", maxWidth:500, maxHeight:"85vh", overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.12)" },
+      label: { fontSize:12, color:"#666", marginBottom:5, display:"block", fontWeight:600 },
+      select: { background:"#f9f9f9", border:"1px solid #ddd", borderRadius:7, padding:"9px 13px", color:"#1a1a1a", fontSize:14, outline:"none", width:"100%" },
+      typePill: (type) => {
+        const c = { meeting:"#b48c3c", todo:"#3498db", log:"#9b59b6" }[type];
+        return { display:"inline-block", padding:"2px 9px", borderRadius:10, fontSize:10, fontWeight:700, background:`${c}18`, color:c, border:`1px solid ${c}44`, marginRight:8 };
+      },
+    };
+
+    const WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    const MONTHS   = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const now      = new Date();
+    const today    = `${WEEKDAYS[now.getDay()]}, ${MONTHS[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
+
+    if (loading) return (
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", flexDirection:"column", gap:16 }}>
+        <div style={{ width:40, height:40, border:"4px solid #e8e8e8", borderTop:"4px solid #b48c3c", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
+        <div style={{ color:"#888", fontSize:14 }}>Loading data from Google Sheets…</div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+
+    return (
+      <div>
+        {/* Saving indicator */}
+        {saving && (
+          <div style={{ position:"fixed", top:12, right:16, background:"#333", color:"#fff", fontSize:12, padding:"6px 14px", borderRadius:20, zIndex:200 }}>
+            Saving…
+          </div>
+        )}
+
+        {/* Error banner */}
+        {error && (
+          <div style={{ background:"#ffeaea", border:"1px solid #f5c6c6", color:"#c0392b", fontSize:13, padding:"10px 20px", textAlign:"center" }}>
+            ⚠️ {error}
+            <button onClick={loadAll} style={{ marginLeft:12, fontSize:12, color:"#c0392b", background:"none", border:"1px solid #c0392b", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>Retry</button>
+          </div>
+        )}
+
+        <div style={{ background:"#ffffff", boxShadow:"0 1px 3px rgba(0,0,0,0.08)" }}>
+          <div style={s.wrap}>
+            <header style={s.header}>
+              <div style={{ display:"flex", alignItems:"center" }}>
+                <div style={s.logoIcon}>Xu</div>
+                <div>
+                  <div style={s.labName}>Xu Lab Management System</div>
+                  <div style={s.labSub}>Research · Records · Results</div>
+                </div>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ fontSize:12, color:"#999" }}>{today}</div>
+                <button onClick={loadAll} style={{ ...s.btn("s"), padding:"5px 12px", fontSize:12 }}>↻ Refresh</button>
+              </div>
+            </header>
+            <nav style={s.nav}>
+              {TABS.map(t => {
+                const isTrash = t === "Trash";
+                return (
+                  <button key={t} style={s.navBtn(activeTab===t, isTrash)} onClick={() => setActiveTab(t)}>
+                    {isTrash ? "🗑 Trash" : t}
+                    {isTrash && trash.length > 0 && <span style={s.badge}>{trash.length}</span>}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        </div>
+
+        <div style={s.wrap}>
+          <div style={{ padding:"24px 0" }}>
+
+            {/* Overview */}
+            {activeTab === "Overview" && (
+              <div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginBottom:22 }}>
+                  <div style={s.statCard(180,140,60)}><div style={s.statNum(180,140,60)}>{meetings.length}</div><div style={s.statLabel}>📋 Meeting Records</div></div>
+                  <div style={s.statCard(52,152,219)}><div style={s.statNum(52,152,219)}>{pendingCount}</div><div style={s.statLabel}>⏳ Pending Tasks</div></div>
+                  <div style={s.statCard(231,76,60)}><div style={s.statNum(231,76,60)}>{urgentCount}</div><div style={s.statLabel}>🔴 Urgent Items</div></div>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1.2fr 1fr", gap:16, marginBottom:16 }}>
+                  <div style={s.card}>
+                    <div style={s.sectionTitle}>📅 Recent Meetings</div>
+                    {meetings.slice(0,3).map(m => (
+                      <div key={m.id} style={{ ...s.mCard, padding:"11px 13px", marginBottom:7 }}>
+                        <div style={{ fontSize:11, color:"#b48c3c", marginBottom:3 }}>{m.date}</div>
+                        <div style={{ fontSize:14, fontWeight:600, marginBottom:2, color:"#1a1a1a" }}>{m.title}</div>
+                        <div style={{ fontSize:12, color:"#888" }}>Host: {m.presenter}</div>
+                      </div>
+                    ))}
+                    {!meetings.length && <div style={{ color:"#bbb", textAlign:"center", padding:20 }}>No meetings yet.</div>}
+                  </div>
+                  <div style={s.card}>
+                    <div style={s.sectionTitle}>🔥 Urgent To-Dos</div>
+                    {todos.filter(t=>!t.done&&t.priority==="high").slice(0,5).map(t => (
+                      <div key={t.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:7, padding:"8px 11px", background:"rgba(231,76,60,0.05)", borderRadius:7, border:"1px solid rgba(231,76,60,0.12)" }}>
+                        <span style={{ color:"#e74c3c", fontSize:10 }}>●</span>
+                        <span style={{ fontSize:13, flex:1, color:"#1a1a1a" }}>{t.text}</span>
+                        {t.due && <span style={{ fontSize:10, color:"#999" }}>{t.due}</span>}
+                      </div>
+                    ))}
+                    {!todos.filter(t=>!t.done&&t.priority==="high").length && <div style={{ color:"#bbb", textAlign:"center", padding:20 }}>🎉 No urgent items!</div>}
+                  </div>
+                </div>
+                <div style={s.card}>
+                  <div style={s.sectionTitle}>📝 Recent Logs</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10 }}>
+                    {dailyLogs.slice(0,4).map(l => (
+                      <div key={l.id} style={s.logCard}>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                          <span style={s.tag(LOG_TYPE_COLOR[l.type]||"#95a5a6")}>{l.type}</span>
+                          <span style={{ fontSize:10, color:"#999" }}>{l.date}</span>
+                        </div>
+                        <div style={{ fontSize:13, color:"#333", marginBottom:4 }}>{l.content}</div>
+                        <div style={{ fontSize:11, color:"#999" }}>By: {l.author}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Meeting Records */}
+            {activeTab === "Meeting Records" && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                  <div style={s.sectionTitle}>📋 Meeting Records ({meetings.length})</div>
+                  <button style={s.btn()} onClick={() => setShowMeetingForm(true)}>+ New Meeting</button>
+                </div>
+                {meetings.map(m => (
+                  <div key={m.id} style={{ ...s.mCard, cursor:"pointer" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}
+                         onClick={() => setExpandedMeeting(expandedMeeting===m.id ? null : m.id)}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10, flex:1, minWidth:0 }}>
+                        <span style={{ fontSize:11, color:"#b48c3c", background:"rgba(180,140,60,0.1)", padding:"3px 10px", borderRadius:5, flexShrink:0 }}>{m.date}</span>
+                        <span style={{ fontSize:14, fontWeight:700, color:"#1a1a1a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{m.title}</span>
+                      </div>
+                      <div style={{ display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+                        <span style={{ fontSize:12, color:"#666" }}>Host: <span style={{ color:"#9a6c20", fontWeight:600 }}>{m.presenter}</span></span>
+                        <span style={{ fontSize:12, color:"#bbb" }}>{expandedMeeting===m.id ? "▲" : "▼"}</span>
+                      </div>
+                    </div>
+                    {expandedMeeting === m.id && (
+                      <div style={{ marginTop:14, paddingTop:14, borderTop:"1px solid #eee" }}>
+                        {m.summary && <div style={{ fontSize:14, color:"#444", marginBottom:10, lineHeight:1.7 }}>{m.summary}</div>}
+                        {m.notes && <div style={{ background:"rgba(180,140,60,0.06)", border:"1px solid rgba(180,140,60,0.2)", borderRadius:7, padding:"8px 12px", fontSize:13, color:"#666", marginBottom:10 }}>📌 {m.notes}</div>}
+                        {m.tags && m.tags.length > 0 && (
+                          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:12 }}>
+                            {m.tags.map((tag,i) => <span key={i} style={s.tag()}>{tag}</span>)}
+                          </div>
+                        )}
+                        <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                          <button style={s.delBtn} onClick={(e) => { e.stopPropagation(); moveToTrash(m,"meeting"); }}>🗑 Delete</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!meetings.length && <div style={{ color:"#bbb", textAlign:"center", padding:40 }}>No meetings recorded yet.</div>}
+              </div>
+            )}
+
+            {/* To-Do List */}
+            {activeTab === "To-Do List" && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+                  <div style={s.sectionTitle}>✅ To-Do List</div>
+                  <button style={s.btn()} onClick={() => setShowTodoForm(true)}>+ New Task</button>
+                </div>
+                <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+                  {[["all","All"],["pending","Pending"],["done","Completed"]].map(([v,l]) => (
+                    <button key={v} style={{ ...s.btn(filter===v?"p":"s"), padding:"6px 16px" }} onClick={() => setFilter(v)}>{l}</button>
+                  ))}
+                </div>
+                {filteredTodos.map(t => (
+                  <div key={t.id} style={s.todoItem(t.done)}>
+                    <div style={s.chk(t.done)} onClick={() => toggleTodo(t.id)}>
+                      {t.done && <span style={{ color:"#fff", fontSize:11, fontWeight:700 }}>✓</span>}
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:14, textDecoration:t.done?"line-through":"none", color:t.done?"#aaa":"#1a1a1a" }}>{t.text}</div>
+                      {t.due && <div style={{ fontSize:11, color:"#999", marginTop:2 }}>Due: {t.due}</div>}
+                    </div>
+                    <span style={{ ...s.tag(PRIORITY_COLOR[t.priority]), fontSize:11 }}>{PRIORITY_LABEL[t.priority]}</span>
+                    <button onClick={() => moveToTrash(t,"todo")} style={s.delBtn}>🗑</button>
+                  </div>
+                ))}
+                {!filteredTodos.length && <div style={{ color:"#bbb", textAlign:"center", padding:40 }}>No items found.</div>}
+              </div>
+            )}
+
+            {/* Daily Logs */}
+            {activeTab === "Daily Logs" && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                  <div style={s.sectionTitle}>📝 Daily Logs ({dailyLogs.length})</div>
+                  <button style={s.btn()} onClick={() => setShowLogForm(true)}>+ New Log</button>
+                </div>
+                {dailyLogs.map(l => (
+                  <div key={l.id} style={{ ...s.logCard, cursor:"pointer" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}
+                         onClick={() => setExpandedLog(expandedLog===l.id ? null : l.id)}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10, flex:1, minWidth:0 }}>
+                        <span style={s.tag(LOG_TYPE_COLOR[l.type]||"#95a5a6")}>{l.type}</span>
+                        <span style={{ fontSize:14, fontWeight:600, color:"#1a1a1a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          {l.content.length > 60 ? l.content.slice(0,60)+"…" : l.content}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+                        <span style={{ fontSize:12, color:"#666" }}>By: <span style={{ color:"#9a6c20", fontWeight:600 }}>{l.author}</span></span>
+                        <span style={{ fontSize:11, color:"#bbb" }}>{l.date}</span>
+                        <span style={{ fontSize:12, color:"#bbb" }}>{expandedLog===l.id ? "▲" : "▼"}</span>
+                      </div>
+                    </div>
+                    {expandedLog === l.id && (
+                      <div style={{ marginTop:12, paddingTop:12, borderTop:"1px solid #eee" }}>
+                        <div style={{ fontSize:14, color:"#333", lineHeight:1.8, marginBottom:12 }}>{l.content}</div>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                          <span style={{ fontSize:11, color:"#bbb" }}>Recorded on {l.date}</span>
+                          <button style={s.delBtn} onClick={(e) => { e.stopPropagation(); moveToTrash(l,"log"); }}>🗑 Delete</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!dailyLogs.length && <div style={{ color:"#bbb", textAlign:"center", padding:40 }}>No logs yet.</div>}
+              </div>
+            )}
+
+            {/* Trash */}
+            {activeTab === "Trash" && (
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                  <div style={{ ...s.sectionTitle, color:"#e74c3c" }}>🗑 Trash ({trash.length})</div>
+                  {trash.length > 0 && (
+                    confirmClear
+                      ? <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                          <span style={{ fontSize:13, color:"#555" }}>Permanently delete all?</span>
+                          <button style={s.permDelBtn} onClick={clearTrash}>Yes, clear all</button>
+                          <button style={s.btn("s")} onClick={() => setConfirmClear(false)}>Cancel</button>
+                        </div>
+                      : <button style={s.permDelBtn} onClick={() => setConfirmClear(true)}>Empty Trash</button>
+                  )}
+                </div>
+                {trash.length === 0 && (
+                  <div style={{ textAlign:"center", padding:"60px 0", color:"#bbb" }}>
+                    <div style={{ fontSize:48, marginBottom:14 }}>🗑</div>
+                    <div style={{ fontSize:15 }}>Trash is empty</div>
+                    <div style={{ fontSize:12, marginTop:6, color:"#ccc" }}>Deleted items will appear here</div>
+                  </div>
+                )}
+                {trash.map((trashItem, idx) => {
+                  const { item, type, deletedAt } = trashItem;
+                  return (
+                    <div key={idx} style={s.trashCard}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10, marginBottom:8 }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ display:"flex", alignItems:"center", marginBottom:4, flexWrap:"wrap", gap:6 }}>
+                            <span style={s.typePill(type)}>{type==="meeting"?"Meeting":type==="todo"?"Task":"Log"}</span>
+                            <span style={{ fontSize:14, fontWeight:600, color:"#1a1a1a" }}>
+                              {type==="meeting"&&item.title}
+                              {type==="todo"&&item.text}
+                              {type==="log"&&(item.content.length>70?item.content.slice(0,70)+"…":item.content)}
+                            </span>
+                          </div>
+                          <div style={{ fontSize:11, color:"#888" }}>
+                            {type==="meeting"&&<span>📅 {item.date} · Host: {item.presenter}</span>}
+                            {type==="todo"&&<span>Priority: {PRIORITY_LABEL[item.priority]}{item.due?` · Due: ${item.due}`:""}</span>}
+                            {type==="log"&&<span>📅 {item.date} · {item.type} · By: {item.author}</span>}
+                            <span style={{ marginLeft:10, color:"#bbb" }}>· Deleted: {deletedAt}</span>
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", gap:8, flexShrink:0 }}>
+                          <button style={s.restoreBtn} onClick={() => restoreItem(trashItem)}>↩ Restore</button>
+                          <button style={s.permDelBtn} onClick={() => permanentDelete(trashItem)}>✕ Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Modal: New Meeting */}
+        {showMeetingForm && (
+          <div style={s.modal} onClick={() => setShowMeetingForm(false)}>
+            <div style={s.mBox} onClick={e => e.stopPropagation()}>
+              <div style={{ fontSize:16, fontWeight:700, marginBottom:20, color:"#9a6c20" }}>📋 New Meeting Record</div>
+              {[{label:"Date",key:"date",type:"date"},{label:"Meeting Title",key:"title",placeholder:"e.g. Weekly Lab Meeting #5"},{label:"Host / Presenter",key:"presenter",placeholder:"Name"}].map(f => (
+                <div key={f.key} style={{ marginBottom:12 }}>
+                  <label style={s.label}>{f.label}</label>
+                  <input type={f.type||"text"} style={s.input} placeholder={f.placeholder} value={newMeeting[f.key]} onChange={e => setNewMeeting({...newMeeting,[f.key]:e.target.value})} />
+                </div>
+              ))}
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Summary</label>
+                <textarea rows={3} style={{ ...s.input, resize:"vertical" }} placeholder="Brief overview of the meeting…" value={newMeeting.summary} onChange={e => setNewMeeting({...newMeeting,summary:e.target.value})} />
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Notes / Action Items</label>
+                <textarea rows={2} style={{ ...s.input, resize:"vertical" }} placeholder="Follow-up items for next time…" value={newMeeting.notes} onChange={e => setNewMeeting({...newMeeting,notes:e.target.value})} />
+              </div>
+              <div style={{ marginBottom:20 }}>
+                <label style={s.label}>Tags (comma-separated)</label>
+                <input style={s.input} placeholder="Progress Report, Brainstorm" value={newMeeting.tags} onChange={e => setNewMeeting({...newMeeting,tags:e.target.value})} />
+              </div>
+              <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+                <button style={s.btn("s")} onClick={() => setShowMeetingForm(false)}>Cancel</button>
+                <button style={s.btn()} onClick={addMeeting}>Save Record</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: New To-Do */}
+        {showTodoForm && (
+          <div style={s.modal} onClick={() => setShowTodoForm(false)}>
+            <div style={s.mBox} onClick={e => e.stopPropagation()}>
+              <div style={{ fontSize:16, fontWeight:700, marginBottom:20, color:"#9a6c20" }}>✅ New Task</div>
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Task Description</label>
+                <input style={s.input} placeholder="Describe the task…" value={newTodo.text} onChange={e => setNewTodo({...newTodo,text:e.target.value})} />
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Priority</label>
+                <select style={s.select} value={newTodo.priority} onChange={e => setNewTodo({...newTodo,priority:e.target.value})}>
+                  <option value="high">🔴 Urgent</option>
+                  <option value="medium">🟡 Medium</option>
+                  <option value="low">🟢 Normal</option>
+                </select>
+              </div>
+              <div style={{ marginBottom:20 }}>
+                <label style={s.label}>Due Date</label>
+                <input type="date" style={s.input} value={newTodo.due} onChange={e => setNewTodo({...newTodo,due:e.target.value})} />
+              </div>
+              <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+                <button style={s.btn("s")} onClick={() => setShowTodoForm(false)}>Cancel</button>
+                <button style={s.btn()} onClick={addTodo}>Add Task</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: New Log */}
+        {showLogForm && (
+          <div style={s.modal} onClick={() => setShowLogForm(false)}>
+            <div style={s.mBox} onClick={e => e.stopPropagation()}>
+              <div style={{ fontSize:16, fontWeight:700, marginBottom:20, color:"#9a6c20" }}>📝 New Daily Log</div>
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Date</label>
+                <input type="date" style={s.input} value={newLog.date} onChange={e => setNewLog({...newLog,date:e.target.value})} />
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Log Type</label>
+                <select style={s.select} value={newLog.type} onChange={e => setNewLog({...newLog,type:e.target.value})}>
+                  <option>Experiment</option>
+                  <option>Maintenance</option>
+                  <option>Safety Check</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <label style={s.label}>Content</label>
+                <textarea rows={4} style={{ ...s.input, resize:"vertical" }} placeholder="Describe today's lab activities…" value={newLog.content} onChange={e => setNewLog({...newLog,content:e.target.value})} />
+              </div>
+              <div style={{ marginBottom:20 }}>
+                <label style={s.label}>Author</label>
+                <input style={s.input} placeholder="Your name" value={newLog.author} onChange={e => setNewLog({...newLog,author:e.target.value})} />
+              </div>
+              <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+                <button style={s.btn("s")} onClick={() => setShowLogForm(false)}>Cancel</button>
+                <button style={s.btn()} onClick={addLog}>Save Log</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<LabManager />);
+</script>
+</body>
+</html>
